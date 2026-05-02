@@ -181,6 +181,153 @@ def get_openai_client():
         return None
 
 
+def generate_songs_with_gpt(client, style, song_type, count, theme="", 
+                             praise_style="", worship_style="", familiarity="",
+                             medley_instructions="", recent_songs="", 
+                             preferred_praise="", preferred_worship=""):
+    """Use GPT to generate additional song suggestions when internal pool is insufficient.
+    
+    Args:
+        client: OpenAI client
+        style: The style being targeted (e.g., "African Praise", "Contemporary")
+        song_type: "praise" or "worship"
+        count: Number of songs to generate
+        theme: Service theme
+        praise_style: Praise style selection
+        worship_style: Worship style selection
+        familiarity: Familiarity preference
+        medley_instructions: Leader notes
+        recent_songs: Recently used songs
+        preferred_praise: Preferred praise songs
+        preferred_worship: Preferred worship songs
+    
+    Returns:
+        List of song dictionaries in the app's format
+    """
+    if not client:
+        return []
+    
+    is_praise = song_type == "praise"
+    duration = 2.0 if is_praise else 4.5
+    tempo = "Upbeat" if is_praise else "Slow"
+    energy_range = "7-10" if is_praise else "2-5"
+    
+    # Build context from user inputs
+    context_parts = []
+    if theme:
+        context_parts.append(f"Service Theme: {theme}")
+    if praise_style and is_praise:
+        context_parts.append(f"Praise Style: {praise_style}")
+    if worship_style and not is_praise:
+        context_parts.append(f"Worship Style: {worship_style}")
+    if familiarity:
+        context_parts.append(f"Familiarity: {familiarity}")
+    if medley_instructions:
+        context_parts.append(f"Leader Notes: {medley_instructions}")
+    if recent_songs:
+        context_parts.append(f"Recently Used: {recent_songs}")
+    if preferred_praise and is_praise:
+        context_parts.append(f"Preferred Praise: {preferred_praise}")
+    if preferred_worship and not is_praise:
+        context_parts.append(f"Preferred Worship: {preferred_worship}")
+    
+    context = "\n".join(context_parts) if context_parts else "No specific preferences provided"
+    
+    # Special instructions for African/Nigerian styles
+    african_instruction = ""
+    if "African" in style or "Nigerian" in style or "Afrobeat" in style:
+        african_instruction = """
+IMPORTANT: Focus on African and Nigerian gospel praise songs. Consider:
+- Songs by Nathaniel Bassey, Dunsin Oyekan, Tope Alabi, Sinach
+- Afrobeat praise songs with high energy
+- Nigerian gospel praise medley songs
+- Call-and-response friendly songs
+- Songs commonly used in live African church services
+"""
+    
+    prompt = f"""You are an expert worship leader and song curator. I need you to suggest {count} {song_type} songs for a worship service.
+
+Style requested: {style}
+{african_instruction}
+{context}
+
+Requirements:
+- Each song should be a real, known worship song
+- For praise medley segments, suggest songs that work well as 2-minute segments
+- For worship songs, suggest full 4-5 minute songs
+- Energy level should be in range {energy_range}
+- If you know the artist, include it; otherwise use "Unknown / verify on YouTube"
+- Prioritize songs that fit the style and context provided
+
+Return your suggestions as a JSON array of objects with these fields:
+- title: song title
+- artist: artist name (or "Unknown / verify on YouTube" if unsure)
+- key: musical key (or "Unknown")
+- tempo: "{tempo}"
+- energy: number 1-10 ({energy_range} range)
+- familiarity: "Medium"
+- duration: {duration}
+- source: "GPT-generated"
+
+Example format:
+[
+  {{"title": "Song Name", "artist": "Artist Name", "key": "D", "tempo": "{tempo}", "energy": 8, "familiarity": "Medium", "duration": {duration}, "source": "GPT-generated"}},
+  ...
+]
+
+Only return the JSON array, no other text."""
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "You are an expert worship leader and song curator with deep knowledge of contemporary, gospel, and African/Nigerian worship music."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.8,
+            max_tokens=2000
+        )
+        
+        result_text = response.choices[0].message.content.strip()
+        
+        # Parse JSON from response
+        import json
+        # Try to extract JSON from the response (might have markdown formatting)
+        if "```json" in result_text:
+            result_text = result_text.split("```json")[1].split("```")[0].strip()
+        elif "```" in result_text:
+            result_text = result_text.split("```")[1].split("```")[0].strip()
+        
+        songs_data = json.loads(result_text)
+        
+        # Convert to app format with YouTube search URLs
+        generated_songs = []
+        for song_data in songs_data:
+            song = {
+                "title": song_data.get("title", "Unknown Song"),
+                "artist": song_data.get("artist", "Unknown / verify on YouTube"),
+                "key": song_data.get("key", "Unknown"),
+                "tempo": song_data.get("tempo", tempo),
+                "energy": song_data.get("energy", 5),
+                "familiarity": song_data.get("familiarity", "Medium"),
+                "duration": song_data.get("duration", duration),
+                "year": 2024,
+                "style": [style],
+                "source": "GPT-generated",
+                "youtube_search_url": make_youtube_link(
+                    song_data.get("title", ""), 
+                    song_data.get("artist", "")
+                )
+            }
+            generated_songs.append(song)
+        
+        return generated_songs
+        
+    except Exception as e:
+        st.error(f"GPT song generation error: {e}")
+        return []
+
+
 def generate_with_openai(client, theme, service_type, segment_type, worship_style,
                          praise_style, familiarity, recent_songs, preferred_songs,
                          praise_duration, worship_duration):
